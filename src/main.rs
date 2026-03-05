@@ -5,7 +5,7 @@ use anyhow::Result;
 use chrono::NaiveDate;
 use clap::Parser;
 use github::GitHubClient;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 #[derive(Parser)]
@@ -53,7 +53,23 @@ async fn main() -> Result<()> {
         events_to_daily(&events)
     };
 
-    let readme = template::render(&user, &repos, &events, &daily, cutoff_days);
+    // Fetch full PR titles (Events API only gives a truncated PR object)
+    let pr_pairs: HashSet<(String, u64)> = events.iter()
+        .filter(|e| e.kind == "PullRequestEvent")
+        .filter_map(|e| {
+            let number = e.payload.get("number").and_then(|v| v.as_u64())?;
+            Some((e.repo.name.clone(), number))
+        })
+        .collect();
+
+    let mut pr_titles: HashMap<String, String> = HashMap::new();
+    for (repo, number) in &pr_pairs {
+        if let Ok(title) = client.get_pr_title(repo, *number).await {
+            pr_titles.insert(format!("{repo}#{number}"), title);
+        }
+    }
+
+    let readme = template::render(&user, &repos, &events, &daily, cutoff_days, &pr_titles);
 
     match cli.output {
         Some(path) => {
