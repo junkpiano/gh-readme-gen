@@ -2,7 +2,7 @@ use crate::github::{Event, Repo, User};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use std::collections::{HashMap, HashSet};
 
-pub fn render(user: &User, repos: &[Repo], events: &[Event], daily: &HashMap<NaiveDate, u32>, cutoff_days: i64) -> String {
+pub fn render(user: &User, repos: &[Repo], events: &[Event], daily: &HashMap<NaiveDate, u32>, cutoff_days: i64, pr_titles: &HashMap<String, String>) -> String {
     let mut md = String::new();
 
     // Header
@@ -72,7 +72,7 @@ pub fn render(user: &User, repos: &[Repo], events: &[Event], daily: &HashMap<Nai
     md.push_str("```\n\n");
 
     // Latest activity
-    let activities = latest_activities(events, 10);
+    let activities = latest_activities(events, 10, pr_titles);
     if !activities.is_empty() {
         md.push_str("## Recent Activity\n\n");
         for line in &activities {
@@ -197,17 +197,24 @@ fn commit_streak(daily: &HashMap<NaiveDate, u32>) -> Streak {
 
 // ---------- activity feed ----------
 
-fn latest_activities(events: &[Event], limit: usize) -> Vec<String> {
-    // Deduplicate: keep only the first occurrence of each (kind, repo) pair
+fn latest_activities(events: &[Event], limit: usize, pr_titles: &HashMap<String, String>) -> Vec<String> {
+    // Dedup key: for PR/issue events include action so "opened" and "merged"
+    // on the same repo both appear; for others dedup by (kind, repo).
     let mut seen = HashSet::new();
     events
         .iter()
         .filter_map(|e| {
-            let key = (e.kind.clone(), e.repo.name.clone());
+            let action = e.payload.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let key = match e.kind.as_str() {
+                "PullRequestEvent" | "IssuesEvent" => {
+                    format!("{}:{}:{}", e.kind, e.repo.name, action)
+                }
+                _ => format!("{}:{}", e.kind, e.repo.name),
+            };
             if seen.contains(&key) {
                 return None;
             }
-            let line = describe_event(e)?;
+            let line = describe_event(e, pr_titles)?;
             seen.insert(key);
             Some(line)
         })
@@ -215,7 +222,7 @@ fn latest_activities(events: &[Event], limit: usize) -> Vec<String> {
         .collect()
 }
 
-fn describe_event(event: &Event) -> Option<String> {
+fn describe_event(event: &Event, pr_titles: &HashMap<String, String>) -> Option<String> {
     let repo = &event.repo.name;
     let when = format_relative(event.created_at);
     let line = match event.kind.as_str() {
@@ -271,21 +278,23 @@ fn describe_event(event: &Event) -> Option<String> {
             if !matches!(action, "opened" | "closed" | "merged") {
                 return None;
             }
-            let title = event
-                .payload
-                .get("pull_request")
-                .and_then(|pr| pr.get("title"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            let merged = event
-                .payload
-                .get("pull_request")
+            let pr = event.payload.get("pull_request");
+            let number = event.payload.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+            let key = format!("{}#{number}", event.repo.name);
+            let title = pr_titles.get(&key).map(|s| s.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("untitled");
+            let merged = pr
                 .and_then(|pr| pr.get("merged"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let url = pr
+                .and_then(|pr| pr.get("html_url"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("https://github.com/{repo}/pull/{number}"));
             let verb = if merged { "merged" } else { action };
-            format!("🔀 {verb} PR in `{repo}`: *{title}* ({when})")
+            format!("🔀 {verb} PR in `{repo}`: [{title}]({url}) ({when})")
         }
         "IssuesEvent" => {
             let action = event
@@ -296,14 +305,19 @@ fn describe_event(event: &Event) -> Option<String> {
             if !matches!(action, "opened" | "closed") {
                 return None;
             }
-            let title = event
-                .payload
-                .get("issue")
+            let issue = event.payload.get("issue");
+            let title = issue
                 .and_then(|i| i.get("title"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .trim();
-            format!("🐛 {action} issue in `{repo}`: *{title}* ({when})")
+            let number = issue.and_then(|i| i.get("number")).and_then(|v| v.as_u64()).unwrap_or(0);
+            let url = issue
+                .and_then(|i| i.get("html_url"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("https://github.com/{repo}/issues/{number}"));
+            format!("🐛 {action} issue in `{repo}`: [{title}]({url}) ({when})")
         }
         "ForkEvent" => format!("🍴 Forked `{repo}` ({when})"),
         "ReleaseEvent" => {
@@ -326,13 +340,11 @@ fn describe_event(event: &Event) -> Option<String> {
 }
 
 fn format_relative(dt: DateTime<Utc>) -> String {
-    let secs = (Utc::now() - dt).num_seconds();
-    match secs {
-        s if s < 60 => "just now".into(),
-        s if s < 3600 => format!("{}m ago", s / 60),
-        s if s < 86400 => format!("{}h ago", s / 3600),
-        s if s < 86400 * 30 => format!("{}d ago", s / 86400),
-        s => format!("{}mo ago", s / (86400 * 30)),
+    let today = Utc::now().date_naive();
+    if dt.date_naive().year() == today.year() {
+        dt.format("%b %d").to_string()
+    } else {
+        dt.format("%b %d, %Y").to_string()
     }
 }
 

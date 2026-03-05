@@ -83,6 +83,16 @@ impl GitHubClient {
         Ok(repos)
     }
 
+    pub async fn get_pr_title(&self, repo: &str, number: u64) -> Result<String> {
+        let url = format!("{API_BASE}/repos/{repo}/pulls/{number}");
+        let mut req = self.client.get(&url);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let pr: serde_json::Value = req.send().await?.error_for_status()?.json().await?;
+        Ok(pr["title"].as_str().unwrap_or("").to_string())
+    }
+
     pub fn has_token(&self) -> bool {
         self.token.is_some()
     }
