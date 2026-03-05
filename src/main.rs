@@ -21,6 +21,10 @@ struct Cli {
     /// Output file (defaults to stdout)
     #[arg(short, long)]
     output: Option<String>,
+
+    /// Push the generated README to {username}/{username} on GitHub (requires --token)
+    #[arg(short, long)]
+    push: bool,
 }
 
 #[tokio::main]
@@ -77,6 +81,12 @@ async fn main() -> Result<()> {
             eprintln!("Written to {path}");
         }
         None => print!("{readme}"),
+    }
+
+    if cli.push {
+        eprintln!("Pushing README to github.com/{0}/{0}...", cli.username);
+        let url = client.push_readme(&cli.username, &readme).await?;
+        eprintln!("Done! {url}");
     }
 
     Ok(())
