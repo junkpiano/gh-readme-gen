@@ -2,8 +2,10 @@ mod github;
 mod template;
 
 use anyhow::Result;
+use chrono::NaiveDate;
 use clap::Parser;
 use github::GitHubClient;
+use std::collections::HashMap;
 use std::fs;
 
 #[derive(Parser)]
@@ -24,17 +26,34 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let cutoff_days: i64 = if cli.token.is_some() { 180 } else { 90 };
     let client = GitHubClient::new(cli.token)?;
 
     eprintln!("Fetching profile for {}...", cli.username);
     let (user, repos, events) = tokio::try_join!(
         client.get_user(&cli.username),
         client.get_repos(&cli.username),
-        client.get_events(&cli.username, 3),
+        client.get_events(&cli.username, cutoff_days),
     )?;
     eprintln!("Fetched {} repos, {} events.", repos.len(), events.len());
 
-    let readme = template::render(&user, &repos, &events);
+    // Build daily contribution map.
+    // With a token: use GraphQL contribution calendar (accurate, full history).
+    // Without: count push events per day from the Events API (best effort).
+    let daily: HashMap<NaiveDate, u32> = if client.has_token() {
+        eprintln!("Fetching contribution calendar...");
+        client
+            .get_contribution_calendar(&cli.username, cutoff_days)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("Warning: GraphQL failed ({e}), falling back to events.");
+                events_to_daily(&events)
+            })
+    } else {
+        events_to_daily(&events)
+    };
+
+    let readme = template::render(&user, &repos, &events, &daily, cutoff_days);
 
     match cli.output {
         Some(path) => {
@@ -45,4 +64,14 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn events_to_daily(events: &[github::Event]) -> HashMap<NaiveDate, u32> {
+    let mut daily: HashMap<NaiveDate, u32> = HashMap::new();
+    for e in events {
+        if e.kind == "PushEvent" {
+            *daily.entry(e.created_at.date_naive()).or_default() += 1;
+        }
+    }
+    daily
 }
