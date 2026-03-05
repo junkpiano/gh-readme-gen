@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use reqwest::Client;
 use serde::Deserialize;
@@ -160,6 +161,53 @@ impl GitHubClient {
             }
         }
         Ok(daily)
+    }
+
+    /// Pushes `content` as README.md to the `{username}/{username}` profile repo.
+    /// Creates the file if it doesn't exist, or updates it with a new commit.
+    /// Requires an authenticated token with `repo` or `public_repo` scope.
+    pub async fn push_readme(&self, username: &str, content: &str) -> Result<String> {
+        self.token
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--push requires a GitHub token (--token / GITHUB_TOKEN)"))?;
+
+        let url = format!("{API_BASE}/repos/{username}/{username}/contents/README.md");
+        let encoded = BASE64.encode(content.as_bytes());
+
+        // Fetch current file SHA (needed for updates; None means new file).
+        let sha: Option<String> = {
+            let mut req = self.client.get(&url);
+            if let Some(auth) = self.auth_header() {
+                req = req.header("Authorization", auth);
+            }
+            let resp = req.send().await?;
+            if resp.status().is_success() {
+                let meta: serde_json::Value = resp.json().await?;
+                meta["sha"].as_str().map(|s| s.to_string())
+            } else {
+                None
+            }
+        };
+
+        let mut body = serde_json::json!({
+            "message": "chore: update profile README [skip ci]",
+            "content": encoded,
+        });
+        if let Some(sha) = sha {
+            body["sha"] = serde_json::Value::String(sha);
+        }
+
+        let mut req = self.client.put(&url).json(&body);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let resp: serde_json::Value = req.send().await?.error_for_status()?.json().await?;
+        let html_url = resp
+            .pointer("/content/html_url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown URL)")
+            .to_string();
+        Ok(html_url)
     }
 
     /// Fetches public events page by page (max 10), stopping once events are

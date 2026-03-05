@@ -340,12 +340,7 @@ fn describe_event(event: &Event, pr_titles: &HashMap<String, String>) -> Option<
 }
 
 fn format_relative(dt: DateTime<Utc>) -> String {
-    let today = Utc::now().date_naive();
-    if dt.date_naive().year() == today.year() {
-        dt.format("%b %d").to_string()
-    } else {
-        dt.format("%b %d, %Y").to_string()
-    }
+    dt.format("%Y %b %d").to_string()
 }
 
 // ---------- commit grass ----------
