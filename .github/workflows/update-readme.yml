@@ -1,0 +1,25 @@
+name: Update Profile README
+
+on:
+  schedule:
+    # Daily at 03:00 UTC
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  update-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # PROFILE_TOKEN must be a PAT belonging to junkpiano with contents:write
+      # access on junkpiano/junkpiano (the default GITHUB_TOKEN is scoped to
+      # this repo only and would commit as github-actions[bot], not junkpiano).
+      - name: Generate and push README
+        env:
+          GITHUB_TOKEN: ${{ secrets.PROFILE_TOKEN }}
+        run: cargo run --release -- junkpiano --push

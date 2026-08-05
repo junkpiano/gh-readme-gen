@@ -1,5 +1,5 @@
 use crate::github::{Event, Repo, User};
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use std::collections::{HashMap, HashSet};
 
 pub fn render(user: &User, repos: &[Repo], events: &[Event], daily: &HashMap<NaiveDate, u32>, cutoff_days: i64, pr_titles: &HashMap<String, String>) -> String {
@@ -38,13 +38,6 @@ pub fn render(user: &User, repos: &[Repo], events: &[Event], daily: &HashMap<Nai
     ));
     md.push('\n');
 
-    // Stats
-    md.push_str("## Stats\n\n");
-    md.push_str(&format!(
-        "| Repos | Followers | Following |\n|-------|-----------|----------|\n| {} | {} | {} |\n\n",
-        user.public_repos, user.followers, user.following
-    ));
-
     // Commit streak
     let streak = commit_streak(daily);
     let fmt_range = |s: Option<NaiveDate>, e: Option<NaiveDate>| match (s, e) {
@@ -56,8 +49,8 @@ pub fn render(user: &User, repos: &[Repo], events: &[Event], daily: &HashMap<Nai
     let lng_range = fmt_range(streak.longest_start, streak.longest_end);
     md.push_str("## Commit Streak\n\n");
     md.push_str(&format!(
-        "| 🔥 Current Streak | 🏆 Longest Streak |\n|-------------------|-------------------|\n| **{} days** {} | **{} days** {} |\n\n",
-        streak.current, cur_range, streak.longest, lng_range
+        "| 🔥 Current Streak | 🏆 Longest Streak | 📦 Public Repos |\n|-------------------|-------------------|-----------------|\n| **{} days** {} | **{} days** {} | **{}** |\n\n",
+        streak.current, cur_range, streak.longest, lng_range, user.public_repos
     ));
     let source = if cutoff_days > 90 {
         format!("> *Based on GitHub contribution calendar — last {cutoff_days} days*\n\n")
@@ -65,11 +58,6 @@ pub fn render(user: &User, repos: &[Repo], events: &[Event], daily: &HashMap<Nai
         format!("> *Based on public push events — last {cutoff_days} days*\n\n")
     };
     md.push_str(&source);
-
-    // Commit grass
-    md.push_str("```\n");
-    md.push_str(&commit_grass(daily));
-    md.push_str("```\n\n");
 
     // Latest activity
     let activities = latest_activities(events, 10, pr_titles);
@@ -341,75 +329,6 @@ fn describe_event(event: &Event, pr_titles: &HashMap<String, String>) -> Option<
 
 fn format_relative(dt: DateTime<Utc>) -> String {
     dt.format("%Y %b %d").to_string()
-}
-
-// ---------- commit grass ----------
-
-fn commit_grass(daily: &HashMap<NaiveDate, u32>) -> String {
-    const MONTHS: [&str; 12] = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    const DAY_LABELS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-    let today = Utc::now().date_naive();
-
-    // Derive grid width from oldest push event (min 13, max 26 weeks)
-    let oldest_push = daily.keys().min().copied();
-    let weeks = match oldest_push {
-        Some(d) => {
-            let days = (today - d).num_days();
-            ((days / 7) + 1).clamp(13, 26) as usize
-        }
-        None => 13,
-    };
-
-    // Align grid start to Sunday
-    let days_since_sun = today.weekday().num_days_from_sunday() as i64;
-    let grid_start = today - Duration::days(days_since_sun) - Duration::weeks((weeks - 1) as i64);
-
-    // Month header: label width = 4 + 1 space = 5 chars; each cell = 2 chars
-    let header_len = 5 + weeks * 2;
-    let mut header: Vec<char> = vec![' '; header_len];
-    let mut last_month: Option<u32> = None;
-    for week in 0..weeks {
-        let date = grid_start + Duration::weeks(week as i64);
-        let m = date.month();
-        if last_month != Some(m) {
-            let label = MONTHS[(m - 1) as usize];
-            let pos = 5 + week * 2;
-            for (i, c) in label.chars().enumerate() {
-                if pos + i < header_len {
-                    header[pos + i] = c;
-                }
-            }
-            last_month = Some(m);
-        }
-    }
-
-    let mut out: String = header.into_iter().collect();
-    out.push('\n');
-
-    for dow in 0..7u32 {
-        out.push_str(DAY_LABELS[dow as usize]);
-        out.push_str("  ");
-        for week in 0..weeks {
-            let date = grid_start + Duration::days(week as i64 * 7 + dow as i64);
-            let ch = if date > today {
-                ' '
-            } else {
-                match daily.get(&date).copied().unwrap_or(0) {
-                    0 => '·',
-                    1..=3 => '▪',
-                    4..=9 => '◼',
-                    _ => '█',
-                }
-            };
-            out.push(ch);
-            out.push(' ');
-        }
-        out.push('\n');
-    }
-
-    out.push_str("          · 0 pushes  ▪ 1-3  ◼ 4-9  █ 10+\n");
-    out
 }
 
 // ---------- helpers ----------

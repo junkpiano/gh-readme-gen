@@ -12,14 +12,11 @@ pub struct User {
     pub login: String,
     pub name: Option<String>,
     pub bio: Option<String>,
-    pub avatar_url: String,
     pub html_url: String,
     pub location: Option<String>,
     pub blog: Option<String>,
     pub twitter_username: Option<String>,
     pub public_repos: u32,
-    pub followers: u32,
-    pub following: u32,
 }
 
 #[derive(Debug, Deserialize)]
