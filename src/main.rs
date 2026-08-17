@@ -30,8 +30,11 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let cutoff_days: i64 = if cli.token.is_some() { 180 } else { 90 };
-    let client = GitHubClient::new(cli.token)?;
+    // An empty --token / GITHUB_TOKEN (e.g. an unset CI secret) is no token at all;
+    // sending an empty Authorization header makes the API answer 401.
+    let token = cli.token.filter(|t| !t.trim().is_empty());
+    let cutoff_days: i64 = if token.is_some() { 180 } else { 90 };
+    let client = GitHubClient::new(token)?;
 
     eprintln!("Fetching profile for {}...", cli.username);
     let (user, repos, events) = tokio::try_join!(
@@ -58,7 +61,8 @@ async fn main() -> Result<()> {
     };
 
     // Fetch full PR titles (Events API only gives a truncated PR object)
-    let pr_pairs: HashSet<(String, u64)> = events.iter()
+    let pr_pairs: HashSet<(String, u64)> = events
+        .iter()
         .filter(|e| e.kind == "PullRequestEvent")
         .filter_map(|e| {
             let number = e.payload.get("number").and_then(|v| v.as_u64())?;
