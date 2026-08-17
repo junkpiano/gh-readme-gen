@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-A Rust CLI tool that fetches a GitHub user's profile, repos, and activity via the GitHub API and generates a profile README (Markdown). See AGENTS.md for the original spec.
+A Rust CLI tool that fetches a GitHub user's profile, repos, and activity via the GitHub API and generates a profile README (Markdown). See AGENTS.md for the original spec. It is also published as a GitHub Action (see [Distribution](#distribution)).
 
 ## Commands
 
@@ -27,7 +27,7 @@ Three modules forming a fetch → transform → render pipeline:
 
 - `src/main.rs` — CLI (clap derive) and orchestration. Fetches user/repos/events concurrently with `tokio::try_join!`, builds a daily contribution map, then renders and optionally writes/pushes.
 - `src/github.rs` — `GitHubClient` wrapping reqwest. All REST calls go through `auth_header()` which attaches the token only if present. Also holds the GraphQL contribution-calendar query and the `push_readme` (GitHub Contents API: fetch SHA, then PUT) logic.
-- `src/template.rs` — pure rendering: takes the fetched data and returns the full Markdown string. Contains the streak calculator, ASCII contribution "grass" grid, activity feed formatter, and language bar chart.
+- `src/template.rs` — pure rendering: takes the fetched data and returns the full Markdown string. Contains the streak calculator, activity feed formatter, and language bar chart.
 
 ### Token-dependent behavior (key design point)
 
@@ -43,3 +43,22 @@ The tool degrades gracefully without a token, and several things branch on `clie
 - `get_events` pages through at most 10 pages of 30 events, stopping early once a page's oldest event is past the cutoff.
 - The activity feed (`latest_activities`) dedups events: PR/issue events by `(kind, repo, action)`, everything else by `(kind, repo)`, and filters out low-signal events (e.g. `WatchEvent`, PR `synchronize` actions).
 - In `PushEvent` payloads, `size` is the authoritative commit count; the `commits` array may be truncated.
+
+## Distribution
+
+`action.yml` is a **composite** GitHub Action. It downloads the prebuilt binary for the runner's
+OS/arch from the matching GitHub Release, runs it with `--output` (always), and optionally `--push`.
+There is no Rust toolchain on the action's critical path.
+
+- The binary's stderr line `Done! {url}` is parsed to produce the `commit-url` output — keep that
+  prefix stable in `main.rs` if you touch it.
+- The action's steps run under `set -euo pipefail` on **bash 3.2** (macOS runners): no `${var,,}`,
+  and never use `[ cond ] && x=y` as a whole statement (it exits the script when false).
+
+`.github/workflows/release.yml` runs on `v*` tags: it verifies that the tag, `Cargo.toml`'s
+`version`, and the `version` input default in `action.yml` all agree, then cross-builds the five
+targets on native runners, uploads `gh-readme-gen-<target>.tar.gz` + `.sha256` to the release, and
+force-moves the major tag (`v0`) so `uses: junkpiano/gh-readme-gen@v0` tracks the latest release.
+
+**Bumping the version means editing two files** (`Cargo.toml` and the `version` input default in
+`action.yml`) or the release build fails on purpose.

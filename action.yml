@@ -1,0 +1,137 @@
+name: 'gh-readme-gen'
+description: 'Generate a GitHub profile README from your profile, repos and activity, and push it to your profile repo.'
+author: 'junkpiano'
+
+branding:
+  icon: 'file-text'
+  color: 'green'
+
+inputs:
+  username:
+    description: 'GitHub username to generate the README for. Defaults to the repository owner.'
+    required: false
+    default: ${{ github.repository_owner }}
+  token:
+    description: >-
+      Token used for the GitHub API and for pushing. The default GITHUB_TOKEN works when the
+      workflow runs inside the profile repo and the job has `contents: write`. Use a PAT with
+      `repo` (or `public_repo`) scope to push to a different repo.
+    required: false
+    default: ${{ github.token }}
+  push:
+    description: 'Push the generated README to {username}/{username}. Set to "false" to only generate it.'
+    required: false
+    default: 'true'
+  output:
+    description: >-
+      Path to write the generated Markdown to. Defaults to a file under RUNNER_TEMP; the final
+      path is always exposed as the `readme-path` output.
+    required: false
+    default: ''
+  version:
+    description: 'Release of gh-readme-gen to run — a version such as "0.1.0", or "latest".'
+    required: false
+    default: '0.1.0'
+  summary:
+    description: 'Append the generated README to the job summary.'
+    required: false
+    default: 'true'
+
+outputs:
+  readme-path:
+    description: 'Path to the generated Markdown file.'
+    value: ${{ steps.generate.outputs.readme-path }}
+  commit-url:
+    description: 'URL of the pushed README on GitHub. Empty when push is disabled.'
+    value: ${{ steps.generate.outputs.commit-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install gh-readme-gen
+      id: install
+      shell: bash
+      env:
+        RG_VERSION: ${{ inputs.version }}
+        RG_REPO: junkpiano/gh-readme-gen
+      run: |
+        set -euo pipefail
+
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64)   target=x86_64-unknown-linux-gnu ;;
+          Linux-ARM64) target=aarch64-unknown-linux-gnu ;;
+          macOS-X64)   target=x86_64-apple-darwin ;;
+          macOS-ARM64) target=aarch64-apple-darwin ;;
+          Windows-X64) target=x86_64-pc-windows-msvc ;;
+          *) echo "::error::Unsupported runner: ${RUNNER_OS}-${RUNNER_ARCH}"; exit 1 ;;
+        esac
+
+        asset="gh-readme-gen-${target}.tar.gz"
+        if [ "$RG_VERSION" = "latest" ]; then
+          url="https://github.com/${RG_REPO}/releases/latest/download/${asset}"
+        else
+          url="https://github.com/${RG_REPO}/releases/download/v${RG_VERSION#v}/${asset}"
+        fi
+
+        dir="${RUNNER_TEMP}/gh-readme-gen"
+        mkdir -p "$dir"
+        echo "Downloading ${url}"
+        if ! curl -fsSL --retry 3 --retry-delay 2 -o "${dir}/${asset}" "$url"; then
+          echo "::error::Could not download ${url} — check that release v${RG_VERSION#v} publishes an asset for ${target}."
+          exit 1
+        fi
+        tar -xzf "${dir}/${asset}" -C "$dir"
+
+        bin="${dir}/gh-readme-gen"
+        if [ "$RUNNER_OS" = "Windows" ]; then bin="${bin}.exe"; fi
+        chmod +x "$bin"
+        echo "bin=${bin}" >> "$GITHUB_OUTPUT"
+        echo "dir=${dir}" >> "$GITHUB_OUTPUT"
+
+    - name: Generate README
+      id: generate
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        RG_USERNAME: ${{ inputs.username }}
+        RG_PUSH: ${{ inputs.push }}
+        RG_OUTPUT: ${{ inputs.output }}
+        RG_SUMMARY: ${{ inputs.summary }}
+        RG_BIN: ${{ steps.install.outputs.bin }}
+        RG_WORK_DIR: ${{ steps.install.outputs.dir }}
+      run: |
+        set -euo pipefail
+
+        out="$RG_OUTPUT"
+        [ -n "$out" ] || out="${RG_WORK_DIR}/README.md"
+        mkdir -p "$(dirname "$out")"
+
+        args=("$RG_USERNAME" --output "$out")
+        case "$(printf '%s' "$RG_PUSH" | tr '[:upper:]' '[:lower:]')" in
+          true|1|yes) args+=(--push) ;;
+          false|0|no) ;;
+          *) echo "::error::push must be true or false (got: ${RG_PUSH})"; exit 1 ;;
+        esac
+
+        log="${RG_WORK_DIR}/run.log"
+        "$RG_BIN" "${args[@]}" 2>&1 | tee "$log"
+
+        commit_url=""
+        if grep -q '^Done! ' "$log"; then
+          commit_url="$(sed -n 's/^Done! //p' "$log" | tail -1)"
+        fi
+        echo "commit-url=${commit_url}" >> "$GITHUB_OUTPUT"
+        echo "readme-path=${out}" >> "$GITHUB_OUTPUT"
+
+        case "$(printf '%s' "$RG_SUMMARY" | tr '[:upper:]' '[:lower:]')" in
+          true|1|yes)
+            {
+              echo "## Generated profile README"
+              if [ -n "$commit_url" ]; then
+                echo "Pushed to [${RG_USERNAME}/${RG_USERNAME}](${commit_url})"
+              fi
+              echo
+              cat "$out"
+            } >> "$GITHUB_STEP_SUMMARY"
+            ;;
+        esac
