@@ -1,0 +1,146 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and upload (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Check Cargo.toml and action.yml agree with the tag
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          cargo_version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          action_version="$(awk '/^  version:/{f=1} f && /default:/{gsub(/[^0-9.]/, "", $2); print $2; exit}' action.yml)"
+
+          fail=0
+          if [ "$cargo_version" != "$version" ]; then
+            echo "::error file=Cargo.toml::version is ${cargo_version}, tag is ${TAG}"; fail=1
+          fi
+          if [ "$action_version" != "$version" ]; then
+            echo "::error file=action.yml::default version input is ${action_version}, tag is ${TAG}"; fail=1
+          fi
+          exit "$fail"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — assets will be replaced."
+          else
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+          fi
+
+  build:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        id: package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          bin=gh-readme-gen
+          if [ "$RUNNER_OS" = "Windows" ]; then bin="${bin}.exe"; fi
+
+          asset="gh-readme-gen-${TARGET}.tar.gz"
+          tar -czf "$asset" -C "target/${TARGET}/release" "$bin"
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "${asset}.sha256"
+          else
+            shasum -a 256 "$asset" > "${asset}.sha256"
+          fi
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+          ASSET: ${{ steps.package.outputs.asset }}
+        run: gh release upload "$TAG" "$ASSET" "${ASSET}.sha256" --clobber
+
+  publish:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.create-release.outputs.tag }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false --latest
+
+      - name: Move the major version tag
+        env:
+          TAG: ${{ needs.create-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          major="v${TAG#v}"
+          major="${major%%.*}"
+          git tag -f "$major" "$TAG"
+          git push -f origin "refs/tags/${major}"
