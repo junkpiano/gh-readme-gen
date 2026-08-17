@@ -1,5 +1,5 @@
 use anyhow::Result;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use reqwest::Client;
 use serde::Deserialize;
@@ -77,7 +77,12 @@ impl GitHubClient {
         if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }
-        let repos = req.send().await?.error_for_status()?.json::<Vec<Repo>>().await?;
+        let repos = req
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Vec<Repo>>()
+            .await?;
         Ok(repos)
     }
 
@@ -164,9 +169,9 @@ impl GitHubClient {
     /// Creates the file if it doesn't exist, or updates it with a new commit.
     /// Requires an authenticated token with `repo` or `public_repo` scope.
     pub async fn push_readme(&self, username: &str, content: &str) -> Result<String> {
-        self.token
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("--push requires a GitHub token (--token / GITHUB_TOKEN)"))?;
+        self.token.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("--push requires a GitHub token (--token / GITHUB_TOKEN)")
+        })?;
 
         let url = format!("{API_BASE}/repos/{username}/{username}/contents/README.md");
         let encoded = BASE64.encode(content.as_bytes());
@@ -213,9 +218,7 @@ impl GitHubClient {
         let cutoff = Utc::now() - Duration::days(cutoff_days);
         let mut all = Vec::new();
         for page in 1..=10u8 {
-            let url = format!(
-                "{API_BASE}/users/{username}/events/public?per_page=30&page={page}"
-            );
+            let url = format!("{API_BASE}/users/{username}/events/public?per_page=30&page={page}");
             let mut req = self.client.get(&url);
             if let Some(auth) = self.auth_header() {
                 req = req.header("Authorization", auth);
