@@ -1,9 +1,9 @@
 name: Update Profile README
 
+# The daily run now lives in junkpiano/junkpiano, which uses the published
+# action (junkpiano/gh-readme-gen@v0.1.0) instead of building from source.
+# Kept here as a manual escape hatch for testing unreleased changes.
 on:
-  schedule:
-    # Daily at 03:00 UTC
-    - cron: "0 3 * * *"
   workflow_dispatch: {}
 
 jobs:
